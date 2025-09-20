@@ -1,4 +1,4 @@
-root,filterOff,HeaderCompressionOff,mtOff,CompressionMethod,LZMA,LZMA2,PPMd,BZip2,Deflate,tmOff,Files,BlockSize,x,$<performance
+root,filterOff,headerCompressionOff,mtOff,compressionMethod,lZMA,lZMA2,pPMd,bZip2,deflate,tmOff,Files,BlockSize,Xval,Performance-
 1,0,0,0,1,1,0,0,0,0,0,0,1,0,18009.4
 1,0,0,0,1,1,0,0,0,0,0,10,1,0,17754.2
 1,0,0,0,1,1,0,0,0,0,0,20,1,0,17676.2

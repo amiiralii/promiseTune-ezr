@@ -1,4 +1,4 @@
-gvn,instcombine,inline,jump_threading,simplifycfg,sccp,print_used_types,ipsccp,iv_users,licm,$<PERF
+gvn,instcombine,inline,jump_threading,simplifycfg,sccp,print_used_types,ipsccp,iv_users,licm,PERF-
 0,0,0,0,0,0,0,0,0,0,210.44
 0,0,0,0,0,1,0,0,1,0,200.66
 0,0,1,0,1,0,0,1,1,0,213.6033333

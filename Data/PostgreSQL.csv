@@ -1,4 +1,4 @@
-root,fsync,synchronousCommit,fullPageWrites,trackActivities,trackCounts,sharedBuffers,tempBuffers,workMem,$<performance
+root,fsync,synchronousCommit,fullPageWrites,trackActivities,trackCounts,SharedBuffers,TempBuffers,WorkMem,Performance-
 1,0,0,0,0,0,64,2,256,46272.2
 1,0,0,0,0,0,128,2,256,46236.8
 1,0,0,0,0,0,256,2,256,46207.6

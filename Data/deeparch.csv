@@ -1,4 +1,4 @@
-batch_size,conv_1_num_filters,conv_1_filter_size,conv_2_num_filters,conv_2_filter_size,conv_3_num_filters,conv_3_filter_size,log_lr,log_beta_1,log_beta_2,log_epsilon,log_decay,$<aws-theano
+batch_size,conv_1_num_filters,conv_1_filter_size,conv_2_num_filters,conv_2_filter_size,conv_3_num_filters,conv_3_filter_size,log_lr,log_beta_1,log_beta_2,log_epsilon,log_decay,Aws-theano-
 0,0,0,0,0,0,0,0,0,0,0,0,1.704458952
 0,0,0,0,0,0,0,0,0,0,0,1,1.103607893
 0,0,0,0,0,0,0,0,0,0,1,0,1.09162426

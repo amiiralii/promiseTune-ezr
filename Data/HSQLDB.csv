@@ -1,4 +1,4 @@
-root,compressed_script,encryption,crypt_aes,crypt_blowfish,transaction_control,txc_mvlocks,txc_mvcc,txc_locks,table_type,memory_tables,cached_tables,small_cache,large_cache,logging,detailed_logging,no_write_delay,small_log,$<performance
+root,compressed_script,encryption,crypt_aes,crypt_blowfish,transaction_control,txc_mvlocks,txc_mvcc,txc_locks,table_type,memory_tables,cached_tables,small_cache,large_cache,logging,detailed_logging,no_write_delay,small_log,Performance-
 1,0,0,0,0,1,0,0,1,1,1,0,0,0,0,0,0,0,248.6
 1,0,1,1,0,1,0,0,1,1,1,0,0,0,0,0,0,0,249.8
 1,0,1,1,0,1,0,0,1,1,1,0,0,0,1,0,0,0,250.6
