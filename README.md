@@ -1,4 +1,5 @@
-# promiseTune-ezr
+# PromiseTune-EZR Experiments
+
 Test EZR's performance on PromiseTune's datasets, for the sake of finding a better solution rooting from both. 
 
 Links to Original EZR and PromiseTune Repos are available here:
