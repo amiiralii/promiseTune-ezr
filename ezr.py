@@ -1,583 +1,419 @@
+#!/usr/bin/env python3 
+"""
+ezr.py (v0.5): lightweight XAI for multi-objective optimization   
+(c) 2025, Tim Menzies <timm@ieee.org>, MIT license      
+[code](https://github.com/timm/ezr) :: 
+[data](https://github.com/timm/moot)    
 
-# todo: 
-# 1.change guards to lt, "gt". have col name in thre explictedyl
-# 2. return nest from rile
+Options:
+   
+    -a  acq=near          label with (near|xploit|xplor|bore|adapt)
+    -A  Any=4             on init, how many initial guesses?   
+    -B  Budget=30         when growing theory, how many labels?   
+    -C  Check=5           budget for checking learned model
+    -D  Delta=smed        effect size test for cliff's delta
+    -F  Few=128           sample size of data random sampling  
+    -K  Ks=0.95           confidence for Kolmogorovâ€"Smirnov test
+    -l  leaf=3            min items in tree leaves
+    -m  m=1               Bayes low frequency param
+    -p  p=2               distance co-efficient
+    -s  seed=1234567891   random number seed   
+    -f  file=../moot/optimize/misc/auto93.csv    data file 
+    -h                     show help   
 
 """
-ezr.py : XAI for active learning + multi-objective optimization
-(c) 2025, Tim Menzies <timm@ieee.org>, MIT License  
+from types import SimpleNamespace as o
+from typing import Any,Iterator
+import traceback, random, time, math, sys, re
+   
+sys.dont_write_bytecode = True
+    
+Qty  = int | float
+Atom = Qty | str | bool
+Row  = list[Atom]
+Op   = (str,int,Atom)
+    
+big = 1e32
 
-OPTIONS:  
+# ## Labeling ----------------------------------------------------------
+def label(row:Row) -> Row: 
+  "Stub. Ensure a row is labelled."
+  return row
 
-      -a acq        xploit or xplore or adapt   = adapt  
-      -b bootstraps num of bootstrap samples    = 512
-      -B BootConf   bootstrap threshold         = 0.95
-      -B BootConf   bootstrap threshold         = 0.95
-      -c cliffConf  cliffs' delta threshold     = 0.197
-      -C Cohen      Cohen threshold             = 0.35
-      -d decs       decimal places for printing = 3  
-      -f file       training csv file           = ../test/data/auto93.csv  
-      -F Few        search a few items in a list = 50
-      -g guess      size of guess               = 0.5  
-      -k k          low frequency Bayes hack    = 1  
-      -K Kuts       max discretization zones    = 17
-      -l leaf       min size of tree leaves     = 2
-      -m m          low frequency Bayes hack    = 2  
-      -p p          distance formula exponent   = 2  
-      -r rseed      random number seed          = 1234567891  
-      -s start      where to begin              = 4  
-      -S Stop       where to end                = 32  
-      -t tiny       min size of leaves of tree  = 4
-"""
-import re,sys,math,time,random
+# ## Constructors ------------------------------------------------------
+def Num(at=0,s=" "): 
+  "Create a numeric column summarizer"
+  return o(it=Num, at=at, txt=s, n=0, mu=0, m2=0, sd=0, 
+           hi=-big, lo=big, more = 0 if s[-1] == "-" else 1)
 
-rand  = random.random
-one   = random.choice
-some  = random.choices
-BIG   = 1E32
+def Sym(at=0,s=" "): 
+  "Create a symbolic column summarizer"
+  return o(it=Sym, at=at, txt=s, n=0, has={})
 
-#--------- --------- --------- --------- --------- --------- ------- -------
-class o:
-  __init__ = lambda i,**d: i.__dict__.update(**d)
-  __repr__ = lambda i: i.__class__.__name__ + show(i.__dict__)
+def Cols(names : list[str]) -> o:
+  "Create column summaries from column names"
+  all=[(Num if s[0].isupper() else Sym)(c,s) 
+        for c,s in enumerate(names)]
+  klass=None
+  for col in all: 
+    if col.txt[-1]=="!": klass=col
+  return o(it=Cols, names = names, all = all, klass = klass,
+           x = [col for col in all if col.txt[-1] not in "X-+"],
+           y = [col for col in all if col.txt[-1] in "-+"])
 
-def Num(txt=" ", at=0):
-  return o(it=Num, txt=txt, at=at, n=0, mu=0, sd=0, m2=0, hi=-BIG, lo=BIG, 
-           rank=0, # used by the stats functions, ignored otherwise
-           goal = 0 if str(txt)[-1]=="-" else 1)
+def Data(src) -> o:
+  "Create data structure from source rows"
+  src = iter(src)
+  return adds(src, o(it=Data, n=0, mid=None, rows=[], kids=[], 
+                     ys=None, cols=Cols(next(src)))) 
 
-def Sym(txt=" ", at=0):
-  return o(it=Sym, txt=txt, at=at, n=0, has={})
+def clone(data:Data, rows=None) -> o:
+  "Create new Data with same columns but different rows"
+  return adds(rows or [], Data([data.cols.names]))
 
-def Cols(names):
-  cols = o(it=Cols, x=[], y=[], klass=-1, all=[], names=names)
-  for n,s in enumerate(names):
-    col = (Num if first(s).isupper() else Sym)(s,n)
-    cols.all += [col]
-    if s[-1] != "X":
-      (cols.y if s[-1] in "+-!" else cols.x).append(col)
-      if s[-1] == "!": cols.klass = col
-  return cols
+# ## Update -----------------------------------------------------------
+def adds(src, it=None) -> o:
+  "Add multiple items to a summarizer"
+  it = it or Num()
+  [add(it,x) for x in src]
+  return it
 
-def Data(src=[]): return adds(src, o(it=Data,n=0,rows=[],cols=None))
+def sub(x:o, v:Any, zap=False) -> Any: 
+  "Remove value from summarizer"
+  return add(x,v,-1,zap)
 
-def clone(data, src=[]): return adds(src, Data([data.cols.names]))
-
-#--------- --------- --------- --------- --------- --------- ------- -------
-def adds(src, i=None):
-  for x in src:
-    i = i or (Num() if isNum(x) else Sym())
-    add(x,i)
-  return i
-
-def sub(v,i,  n=1): return add(v,i,n=n,flip=-1)
-
-def add(v,i,  n=1,flip=1): # n only used for fast sym add
-  def _sym(): 
-    i.has[v] = flip * n  + i.has.get(v,0)
-  def _data(): 
-    if not i.cols: i.cols = Cols(v)  # called on first row
-    elif flip < 0:# row subtraction managed elsewhere; e.g. see eg_addSub  
-       [sub(v[col.at],col,n) for col in i.cols.all]  
+def add(x: o, v:Any, inc=1, zap=False) -> Any:
+  "incrementally update Syms,Nums or Datas"
+  if v == "?": return v
+  x.n += inc
+  if   x.it is Sym: x.has[v] = inc + x.has.get(v,0)
+  elif x.it is Num:
+    x.lo, x.hi = min(v, x.lo), max(v, x.hi)
+    if inc < 0 and x.n < 2:
+      x.sd = x.m2 = x.mu = x.n = 0
     else:
-       i.rows += [[add( v[col.at], col,n) for col in i.cols.all]]
-  def _num():
-    i.lo  = min(v, i.lo)
-    i.hi  = max(v, i.hi)
-    if flip < 0 and i.n < 2: 
-      i.mu = i.sd = 0
-    else:
-      d     = v - i.mu
-      i.mu += flip * (d / i.n)
-      i.m2 += flip * (d * (v -   i.mu))
-      i.sd  = 0 if i.n <=2  else (max(0,i.m2)/(i.n-1))**.5
-
-  if v != "?":
-    i.n += flip * n 
-    _sym() if i.it is Sym else (_num() if i.it is Num else _data())
+      d     = v - x.mu
+      x.mu += inc * (d / x.n)
+      x.m2 += inc * (d * (v - x.mu))
+      x.sd  = 0 if x.n < 2 else (max(0,x.m2)/(x.n-1))**.5
+  elif x.it is Data:
+    x.mid = None
+    if inc > 0: x.rows += [v]
+    elif zap: x.rows.remove(v) # slow for long rows
+    [add(col, v[col.at], inc) for col in x.cols.all]
+  else: raise TypeError(f"cannot add to {type(x)}")
   return v
 
-#--------- --------- --------- --------- --------- --------- ------- -------
-def norm(v, col):
-   if v=="?" or col.it is Sym: return v
-   return (v - col.lo) / (col.hi - col.lo + 1/BIG)
+# ## Misc data functions ----------------------------------------------
+def norm(num:Num, v:float) -> float:  
+  "Normalize a value to 0..1 range"
+  return  v if v=="?" else (v - num.lo) / (num.hi - num.lo + 1E-32)
 
-def mid(col): 
-  return col.mu if col.it is Num else max(col.has,key=col.has.get)
+def mids(data: Data) -> Row:
+  "Get central tendencies of all columns"
+  data.mid = data.mid or [mid(col) for col in data.cols.all]
+  return data.mid
 
-def spread(c): 
-  if c.it is Num: return c.sd
-  return -sum(n/c.n * math.log(n/c.n,2) for n in c.has.values() if n > 0)
+def mid(col: o) -> Atom:
+  "Get central tendency of one column"
+  return max(col.has, key=col.has.get) if col.it is Sym else col.mu
 
-def ydist(row,  data):
-  return (sum(abs(norm(row[c.at], c) - c.goal)**the.p for c in data.cols.y) 
-          / len(data.cols.y)) ** (1/the.p)
+def divs(data:Data) -> float:
+  "Return the central tendency for each column."
+  return [div(col) for col in data.cols.all]
 
-def ydists(rows, data): return sorted(rows, key=lambda row: ydist(row,data))
+def div(col:o) -> float:
+  "Return the central tendnacy for one column."
+  if col.it is Num: return col.sd
+  vs = col.has.values()
+  N  = sum(vs)
+  return -sum(p*math.log(p,2) for n in vs if (p:=n/N) > 0)
 
-def yNums(rows,data): return adds(ydist(row,data) for row in rows)
+# ## Distance Calcs ---------------------------------------------------
+def dist(src) -> float:
+  "Calculate Minkowski distance"
+  d,n = 0,0
+  for v in src: n,d = n+1, d + v**the.p;
+  return (d/n) ** (1/the.p)
 
-#--------- --------- --------- --------- --------- --------- ------- -------
-def likes(lst, datas):
-  n = sum(data.n for data in datas)
-  return max(datas, key=lambda data: like(lst, data, n, len(datas)))
+def disty(data:Data, row:Row) -> float:
+  "Distance from row to best y-values"
+  return dist(abs(norm(c, row[c.at]) - c.more) for c in data.cols.y)
 
-def like(row, data, nall=100, nh=2):
-  def _col(v,col): 
-    if col.it is Sym: 
-      return (col.has.get(v,0) + the.m*prior) / (col.n + the.m + 1/BIG)
-    sd    = col.sd + 1/BIG
-    nom   = math.exp(-1*(v - col.mu)**2/(2*sd*sd))
-    denom = (2*math.pi*sd*sd) ** 0.5
-    return max(0, min(1, nom/denom))
+def distysort(data:Data,rows=None) -> list[Row]:
+  "Sort rows by distance to best y-values"
+  return sorted(rows or data.rows, key=lambda r: disty(data,r))
 
-  prior = (data.n + the.k) / (nall + the.k*nh)
-  tmp   = [_col(row[x.at], x) for x in data.cols.x if row[x.at] != "?"]
-  return sum(math.log(n) for n in tmp + [prior] if n>0)
+def distx(data:Data, row1:Row, row2:Row) -> float:
+  "Distance between two rows using x-values"
+  return dist(_aha(c, row1[c.at], row2[c.at])  for c in data.cols.x)
 
-#--------- --------- --------- --------- --------- --------- ------- -------
-def actLearn(data, shuffle=True):
-  def _guess(row): 
-    return _acquire(n/the.Stop, like(row,best,n,2), like(row,rest,n,2))
-  def _acquire(p, b,r): 
-    b,r = math.e**b, math.e**r
-    q = 0 if the.acq=="xploit" else (1 if the.acq=="xplore" else 1-p)
-    return (b + r*q) / abs(b*q - r + 1/BIG) 
+def _aha(col, a,b):
+  "David Aha's distance function."
+  if a==b=="?": return 1
+  if col.it is Sym: return a != b
+  a,b = norm(col,a), norm(col,b)
+  a = a if a != "?" else (0 if b>0.5 else 1)
+  b = b if b != "?" else (0 if a>0.5 else 1)
+  return abs(a - b)
 
-  if shuffle: random.shuffle(data.rows)
-  n     =  the.start
-  todo  =  data.rows[n:]
-  br    = clone(data, data.rows[:n])
-  done  =  ydists(data.rows[:n], br)
-  cut   =  round(n**the.guess)
-  best  =  clone(data, done[:cut])
-  rest  =  clone(data, done[cut:])
-  while len(todo) > 2  and n < the.Stop:
-    n      += 1
-    hi, *lo = sorted(todo[:the.Few*2], key=_guess, reverse=True)
-    todo    = lo[:the.Few] + todo[the.Few*2:] + lo[the.Few:]
-    add(hi, best)
-    add(hi, br)
-    best.rows = ydists(best.rows, br)
-    if len(best.rows) >= round(n**the.guess):
-      ## Sort Best by _guess with reverse=True, then try semi-supervised learning
-      ## or cluster the data and use the cluster labels
-      add( sub(best.rows.pop(-1), best), rest)
-  return o(best=best, rest=rest, todo=todo)
-
-#--------- --------- --------- --------- --------- --------- ------- -------
-def cuts(rows, col,Y,Klass=Num):
-  def _v(row) : return row[col.at]
-  def _upto(x): return f"{col.txt} <= {x} ", lambda z:_v(z)=="?" or _v(z)<=x
-  def _over(x): return f"{col.txt} >  {x} ", lambda z:_v(z)=="?" or _v(z)>x
-  def _eq(x)  : return f"{col.txt} == {x} ", lambda z:_v(z)=="?" or _v(z)==x
-  def _sym():
-    n,d = 0,{}
-    for row in rows:
-      x = _v(row) 
-      if x != "?":
-        d[x] = d.get(x) or Klass()
-        add(Y(row), d[x])
-        n = n + 1
-    return o(entropy= sum(v.n/n * spread(v) for v in d.values()),
-            decisions= [_eq(k) for k,v in d.items()],
-            colSplit=col)
-
-  def _num():
-    out,b4 = None,None 
-    lhs, rhs = Klass(), Klass()
-    xys = [(_v(r), add(Y(r),rhs)) for r in rows if _v(r) != "?"]
-    xpect = spread(rhs)
-    for x,y in sorted(xys, key=lambda xy: first(xy)):
-      if the.leaf <= lhs.n <= len(xys) - the.leaf: 
-        if x != b4:
-          tmp = (lhs.n * spread(lhs) + rhs.n * spread(rhs)) / len(xys)
-          if tmp < xpect:
-            xpect, out = tmp,[_upto(b4), _over(b4)]
-      add(sub(y, rhs),lhs)
-      b4 = x
-    if out:
-      return o(entropy=xpect, decisions=out, colSplit=col)
-
-  return _sym() if col.it is Sym else _num()
-
-#--------- --------- --------- --------- --------- --------- ------- -------
-def tree(rows,data,Klass=Num,xplain="",decision=lambda _:True):
-   def Y(row): return ydist(row,data)
-   node        = clone(data,rows)
-   node.ys     = yNums(rows,data).mu
-   node.impurity = yNums(rows,data).sd
-   node.kids   = []
-   node.decision  = decision
-   node.xplain = xplain
-   node.colSplit = o(txt="")
-   if len(rows) >= the.leaf:
-     splits=[]
-     for col in data.cols.x:
-       if tmp := cuts(rows,col,Y,Klass=Klass): 
-        splits += [tmp]
-     if splits:
-       best_split = sorted(splits, key=lambda cut:cut.entropy)[0]
-       for xplain,decision in best_split.decisions:
-         rows1= [row for row in rows if decision(row)]
-         if the.leaf <= len(rows1) < len(rows):
-           node.impurity = best_split.entropy
-           node.colSplit = best_split.colSplit
-           node.kids += [tree(rows1,data,Klass=Klass,xplain=xplain,decision=decision)]
-   return node   
-
-def nodes(node,lvl=0, key=None):
-  yield lvl,node
-  for kid in (sorted(node.kids, key=key) if key else node.kids):
-    for node1 in nodes(kid, lvl+1, key=key):
-      yield node1
-
-def showTree(tree, key=lambda z:z.ys):
-  stats = yNums(tree.rows,tree)
-  win = lambda x: 100-int(100*(x-stats.lo)/(stats.mu - stats.lo))
-  print(f"{'d2h':>4} {'win':>4} {'n':>4}  {'Impurity':>5}")
-  print(f"{'----':>4} {'----':>4} {'----':>4}  {'----':>5}")
-  for lvl, node in nodes(tree,key=key):
-    leafp = len(node.kids)==0
-    post= ";" if leafp else ""
-    print(f"{node.ys:4.2f} {win(node.ys):4} {len(node.rows):4} {node.impurity:5.2f}   {(lvl-1) * '|  '}{node.xplain}" + post)
-
-def leaf(node, row):
-  for kid in node.kids or []:
-    if kid.decision(row): 
-      return leaf(kid,row)
-  return node
-
-def path(node, row, route):
-  for kid in node.kids or []:
-    if kid.decision(row): 
-      route.add(kid.xplain.split(" ")[0])
-      return path(kid,row, route)
-  return route
-
-def treeMDI(node, lvl=0):
-  if not node.kids: return 0
-  kidMDIs = 0
-  for kid in node.kids:
-    kidMDIs += treeMDI(kid, lvl+1)
-  #kidMDIs = sum(k.impurity for k in node.kids if k.kids )
-  w = sum(len(kid.rows) for kid in node.kids)
-  return kidMDIs + sum( (len(kid.rows)/w) * kid.impurity for kid in node.kids )
-    
-def treeFeatureImportance(tree, importance = {}):
-  imp = importance or {j.txt:0 for j in tree.cols.x}
-  for _, node in nodes(tree):
-    if len(node.kids)>0:
-      w = sum(len(kid.rows) for kid in node.kids)
-      imp[node.colSplit.txt] += sum( (len(kid.rows)/w) * kid.impurity for kid in node.kids )
-  return imp
-
-#--------- --------- --------- --------- --------- --------- ------- -------
-def delta(i,j): 
-  return abs(i.mu - j.mu) / ((i.sd**2/i.n + j.sd**2/j.n)**.5 + 1/BIG)
-
-# non-parametric significance test From Introduction to Bootstrap, 
-# Efron and Tibshirani, 1993, chapter 20. https://doi.org/10.1201/9780429246593"""
-def bootstrap(vals1, vals2):
-    x,y,z = adds(vals1+vals2), adds(vals1), adds(vals2)
-    yhat  = [y1 - mid(y) + mid(x) for y1 in vals1]
-    zhat  = [z1 - mid(z) + mid(x) for z1 in vals2] 
-    n     = 0
-    for _ in range(the.bootstraps):
-      n += delta(adds(some(yhat,k=len(yhat))), 
-                 adds(some(zhat,k=len(zhat)))) > delta(y,z) 
-    return n / the.bootstraps >= (1- the.BootConf)
-
-# Non-parametric effect size. Threshold is border between small=.11 and medium=.28 
-# from Table1 of  https://doi.org/10.3102/10769986025002101
-def cliffs(vals1,vals2):
-   n,lt,gt = 0,0,0
-   for x in vals1:
-     for y in vals2:
-        n += 1
-        if x > y: gt += 1
-        if x < y: lt += 1 
-   return abs(lt - gt)/n  < the.cliffConf # 0.197) 
-
-def vals2RankedNums(d, eps=0, reverse=False):
-  def _samples():            return [_sample(d[k],k) for k in d]
-  def _sample(vals,txt=" "): return o(vals=vals, num=adds(vals,Num(txt=txt)))
-  def _same(b4,now):         return (abs(b4.num.mu - now.num.mu) < eps or
-                                    cliffs(b4.vals, now.vals) and 
-                                    bootstrap(b4.vals, now.vals))
-  tmp,out = [],{}
-  for now in sorted(_samples(), key=lambda z:z.num.mu, reverse=reverse):
-    if tmp and _same(tmp[-1], now): 
-      tmp[-1] = _sample(tmp[-1].vals + now.vals)
-    else: 
-      tmp += [ _sample(now.vals) ]
-    now.num.rank = chr(96+len(tmp))
-    out[now.num.txt] = now.num 
+# ## Clustering --------------------------------------------------------
+def distKpp(data, rows=None, k=20, few=None): #\n{100}#
+  "Return centroids separated by distance squared (ish)"
+  few = few or the.Few
+  rows = rows or data.rows[:]
+  random.shuffle(rows)
+  out = [rows[0]]
+  while len(out) < k:
+    tmp = random.sample(rows, min(few,len(data.rows)))
+    ws  = [min(distx(data, r, c)**2 for c in out) for r in tmp]
+    p   = sum(ws) * random.random()
+    for j, w in enumerate(ws):
+      if (p := p - w) <= 0: 
+          out += [tmp[j]]; break
   return out
 
-#--------- --------- --------- --------- --------- --------- ------- -------
-def isNum(x): return isinstance(x,(float,int))
+def distProject(data,row,east,west,c=None):
+  "Map row along a line east -> west."
+  D = lambda r1,r2 : distx(data,r1,r2)
+  c = c or D(east,west)  
+  a,b = D(row,east), D(row,west)
+  return (a*a +c*c - b*b)/(2*c + 1e-32)
 
-def first(lst): return lst[0] 
+def distFastmap(data,rows=None):
+  "Sort rows along a line between 2 distant points."
+  rows = rows or data.rows
+  X = lambda r1,r2:distx(data,r1,r2)
+  anywhere, *few = random.choices(rows, k=the.Few)
+  here  = max(few, key= lambda r: X(anywhere,r))
+  there = max(few, key= lambda r: X(here,r))
+  c     = X(here,there)
+  return sorted(rows, key=lambda r: distProject(data,r,here,there,c))
 
-def coerce(s):
-  try: return int(s)
-  except Exception:
-    try: return float(s)
-    except Exception:
-      s = s.strip()
-      return True if s=="True" else (False if s=="False" else s)
+def distFastermap(data,rows=None, sway2=True):
+  "Prune half the rows furthest from best distant pair."
+  rows = shuffle(rows or data.rows)
+  raw  = rows[the.Any:]
+  out  = clone(data, rows[:the.Any])
+  Y    = lambda r: disty(out,r)
+  while len(out.rows) < the.Budget and len(raw) >= 2: 
+    east, *rest, west = distFastmap(data,raw)
+    add(out, east)
+    add(out, west)
+    n   = len(rest)//2
+    raw = raw[:n] if Y(east) < Y(west) else raw[n:]
+    if sway2 and len(raw) < 2:
+      raw = shuffle([r for r in rows if r not in out.rows])
+  return sorted(out.rows, key=Y)
 
-def csv(file):
-  with open(sys.stdin if file=="-" else file, encoding="utf-8") as src:
-    for line in src:
-      line = re.sub(r'([\n\t\r ]|#.*)', '', line)
-      if line: yield [coerce(s) for s in line.split(",")]
+# ## Likelihood -------------------------------------------------------
+def like(i:o, v:Any, prior=0) -> float :
+  "log probability of 'v' belong to the distribution in 'i'"
+  if i.it is Sym:
+    tmp = ((i.has.get(v,0) + the.m*prior) 
+           / (sum(i.has.values())+the.m+1e-32))
+    return math.log(max(tmp, 1e-32))
+  else:
+    var = i.sd * i.sd + 1E-32
+    log_nom = -1 * (v - i.mu) ** 2 / (2 * var)
+    log_denom = 0.5 * math.log(2 * math.pi * var)
+    return log_nom - log_denom
 
-def cli(d):
-  for k,v in d.items():
-    for c,arg in enumerate(sys.argv):
-      if arg == "-"+first(k): 
-        new = sys.argv[c+1] if c < len(sys.argv) - 1 else str(v)
-        d[k] = coerce("False" if str(v) == "True"  else (
-                      "True"  if str(v) == "False" else new))
+def likes(data:Data, row:Row, nall=100, nh=2) -> float:
+  "How much does this DATA like row?"
+  prior = data.n / (nall + 1e-32)
+  log_prior = math.log(max(prior, 1e-32))
+  tmp = [like(c, row[c.at]) for c in data.cols.x if row[c.at] != "?"]
+  return log_prior + sum(tmp)    
 
-def showd(x): print(show(x)); return x
+# ## Active Learning --------------------------------------------------
+def likely(data:Data, rows=None) -> list[Row]:
+  "Find an 'x' most likely to be best. Add to xy. Repeat."
+  rows = rows or data.rows
+  x   = clone(data, shuffle(rows[:]))
+  xy, best, rest = clone(data), clone(data), clone(data)
 
-def show(x):
-  it = type(x)
-  if   it is str   : x= f'"{x}"'
-  elif callable(x) : x= x.__name__ + '()'
-  elif it is float : x= str(round(x,the.decs))
-  elif it is list  : x= '['+', '.join([show(v) for v in x])+']'
-  elif it is dict  : x= "{"+' '.join([f":{k} {show(v)}" 
-                          for k,v in x.items() if first(str(k)) !="_"])+"}"
-  return str(x)
+  # label anything
+  for _ in range(the.Any): add(xy, label(sub(x, x.rows.pop())))
 
-def main():
-  cli(the.__dict__)
+  # divide lablled items into best and rest
+  xy.rows = distysort(xy); n = round(the.Any**.5)
+  adds(xy.rows[:n], best); adds(xy.rows[n:], rest)
+
+  # loop, labelling the best guess
+  guess = nearer if the.acq=="near" else likelier
+  while x.n > 2 and xy.n < the.Budget:
+    add(xy, add(best, sub(x, label(guess(xy, best, rest, x)))))
+    if best.n > (xy.n**.5):
+      best.rows = distysort(xy,best.rows)
+      while best.n > (xy.n**.5):
+        add(rest, sub(best, best.rows.pop(-1)))
+  return distysort(xy)
+
+def nearer(xy, best:Data, rest:Data, x:Data) -> Row:
+  "Remove from `x' any 1 thing more best-ish than rest-ish."
+  for _ in range(the.Few):
+    row = x.rows[ i := random.randrange(x.n) ]
+    if distx(xy, mids(best), row) < distx(xy, mids(rest), row):
+      return x.rows.pop(i)
+  return x.rows.pop()
+
+def likelier(_, best:Data, rest:Data, x:Data) -> Row:
+  "Sort 'x by the.acq, remove first from 'x'. Return first."
+  e, nall = math.e, best.n + rest.n
+  p = nall/the.Budget
+  q = {'xploit':0, 'xplor':1}.get(the.acq, 1-p)
+  def _fn(row):
+    b,r = e**likes(best,row,nall,2), e**likes(rest,row,nall,2)
+    if the.acq=="bore": return b*b/(r+1e-32)
+    return (b + r*q) / abs(b*q - r + 1e-32)
+  first, *lst = sorted(x.rows[:the.Few*2], key=_fn, reverse=True)
+  x.rows = lst[:the.Few] + x.rows[the.Few*2:] + lst[the.Few:] 
+  return first
+
+# ## Tree Generation ----------------------------------------------------
+def treeSelects(row:Row, op:str, at:int, y:Atom) -> bool: 
+  "Have we selected this row?"
+  if (x:=row[at]) == "?" : return True
+  if op == "<="          : return x <= y
+  if op == "=="          : return x == y
+  if op == ">"           : return x > y
+
+def Tree(data, rows=None, Y=None, Klass=Num, how=None):
+  "Create tree from list of lists"
+  rows = rows or data.rows
+  Y    = Y or (lambda row: disty(data,row))
+  tree = o(rows=rows, how=how, kids=[], 
+           mu=mid(adds(Y(r) for r in rows)))
+  if len(rows) >= the.leaf:
+    spread, cuts = min(treeCuts(c,rows,Y,Klass) for c in data.cols.x)
+    if spread < big:
+      for cut in cuts:
+        subset = [r for r in rows if treeSelects(r, *cut)]
+        if the.leaf <= len(subset) < len(rows):
+          tree.kids += [Tree(data, subset, Y, Klass, cut)]
+  return tree
+
+def treeCuts(col, rows, Y:callable, Klass:callable):
+  "Return best cut for column at position 'at'"
+  xys = sorted([(r[col.at], Y(r)) for r in rows if r[col.at] != "?"])
+  return (_symCuts if col.it is Sym else _numCuts)(col.at,xys,Y,Klass)
+
+def _symCuts(at,xys,Y,Klass) -> (float, list[Op]):
+  "Cuts for symbolic column."
+  d = {}
+  for x, y in xys:
+    d[x] = d.get(x) or Klass()
+    add(d[x], y)
+  here = sum(ys.n/len(xys) * div(ys) for ys in d.values())
+  return here, [("==", at, x) for x in d]
+
+def _numCuts(at,xys,Y,Klass) -> (float, list[Op]):
+  "Cuts for numeric columns."
+  spread, cuts, left, right = big, [], Klass(), Klass()
+  [add(right,y) for _, y in xys]
+  for i, (x, y) in enumerate(xys[:-1]):
+    add(left, sub(right, y))
+    if x != xys[i+1][0]:
+      if the.leaf <= i < len(xys) - the.leaf:
+        now = (left.n*div(left) + right.n*div(right)) / (left.n+right.n)
+        if now < spread:
+          spread = now
+          cuts = [("<=", at, x), (">", at, x)]
+  return spread, cuts
+
+# ## Tree Processing -------------------------------------------------
+def treeLeaf(tree, row):
+  "Find which leaf a row belongs to"
+  for kid in tree.kids:
+    if treeSelects(row, *kid.how): return treeLeaf(kid, row)
+  return tree
+
+def treeNodes(tree, lvl=0):
+  "Iterate over all tree nodes"
+  yield lvl, tree
+  for kid in sorted(tree.kids, key=lambda kid: kid.mu):
+    yield from treeNodes(kid, lvl + 1)
+
+def treeShow(data,tree,win=None):
+  "Display tree structure with Y means"
+  win = win or (lambda v:int(100*v))
+  n   = {s:0 for s in data.cols.names}
+  for lvl, node in treeNodes(tree):
+    if lvl == 0: continue
+    op, at, y = node.how
+    indent = '|  ' * (lvl - 1)
+    rule = f"if {data.cols.names[at]} {op} {y}"
+    n[data.cols.names[at]] += 1
+    leaf = ";" if not node.kids else ""
+    print(f"n:{len(node.rows):4}   win:{win(node.mu):5}     ",end="")
+    print(f"{indent}{rule}{leaf}")
+  print("\nUsed: ",*sorted([k for k in n.keys() if n[k]>0],
+                           key=lambda k: -n[k]))
+
+# ## Misc Utils ------------------------------------------------------
+def fyi(s, end=""):
+  "write the standard error (defaults to no new line)"
+  print(s, file=sys.stderr, flush=True, end=end)
+
+def coerce(s:str) -> Atom:
+  "coerce a string to int, float, bool, or trimmed string"
+  for fn in [int,float]:
+    try: return fn(s)
+    except Exception as _: pass
+  s = s.strip()
+  return {'True':True,'False':False}.get(s,s)
+
+def csv(file: str ) -> Iterator[Row]:
+  "Returns rows of a csv file."
+  with open(file,encoding="utf-8") as f:
+    for line in f:
+      if (line := line.split("%")[0]):
+        yield [coerce(s) for s in line.split(",")]
+
+def shuffle(lst:list) -> list:
+  "shuffle a list, in place"
+  random.shuffle(lst); return lst
+
+def main(settings : o, funs: dict[str,callable]) -> o:
+  "from command line, update config find functions to call"
   for n,s in enumerate(sys.argv):
-    if fun := globals().get("eg" + s.replace("-","_")):
-      arg = "" if n==len(sys.argv) - 1 else sys.argv[n+1]
-      random.seed(the.rseed)
-      fun(coerce(arg))
+    if (fn := funs.get(f"eg{s.replace('-', '_')}")):
+      try: 
+        random.seed(settings.seed); fn()
+      except Exception as e: 
+        print("Error:", e); traceback.print_exc()
+    else:
+      for key in vars(settings):
+        if s=="-"+key[0]: 
+          settings.__dict__[key] = coerce(sys.argv[n+1])
 
-#--------- --------- --------- --------- --------- --------- ------- -------
-def kpp(i, k, rows=None):
-    def D(x, y):
-      key = tuple(sorted((id(x), id(y))))
-      if key not in mem: mem[key] = i.xdist(x,y)
-      return mem[key]
-     
-    row, *rows = random.shuffle(rows or i.rows)[:the.some]
-    out, mem = [row], {}
-    for _ in range(1, k):
-      dists = [min(D(x, y)**2 for y in out) for x in rows]
-      r     = random.random() * sum(dists)
-      for j, d in enumerate(dists):
-        r -= d
-        if r <= 0:
-          out.append(rows.pop(j))
-          break
-    return out, mem
-#--------- --------- --------- --------- --------- --------- ------- -------
-def eg__the(_): print(the)
+# ## Demos ------------------------------------------------------------
+def eg__demo():
+  "The usual run"
+  data = Data(csv(the.file))
+  print("\nFile:\t",the.file)
+  print("Rows:\t",len(data.rows))
+  print("X:\t",len(data.cols.x))
+  print("Y:\t",len(data.cols.y),*[c.txt for c in data.cols.y])
+  print(" ")
+  b4   = adds(disty(data,row) for row in data.rows)
+  win  = lambda v: int(100*(1 - (v - b4.lo)/(b4.mu - b4.lo)))
+  best = lambda rows: win(disty(data, distysort(data,rows)[0]))
+  half = len(data.rows) // 2
+  data.rows = shuffle(data.rows)
+  train, holdout = data.rows[:half], data.rows[half:]
+  labels = likely(clone(data, train))
+  tree   = Tree(clone(data, labels))
+  treeShow(data, tree,win)
+  print("Best train:",best(labels), "hold-out:",
+         best(sorted(holdout, 
+              key=lambda row: treeLeaf(tree,row).mu)[:the.Check]))
 
-def eg__cols(_): 
-  s="Clndrs,Volume,HpX,Model,origin,Lbs-,Acc+,Mpg+"
-  [print(col) for col in Cols(s.split(",")).all]
+def ezrmain():
+  "top-level call"
+  main(the,globals()); random.seed(the.seed); eg__demo()
 
-def eg__csv(file): 
-  rows =list(csv(file or the.file))
-  assert 3192 == sum(len(row) for row in rows)
-  for row in rows[1:]: assert type(first(row)) is int
-
-def eg__data(file):
-  data=Data(csv(file or the.file))
-  assert 3184 == sum(len(row) for row in data.rows)
-  for row in data.rows: assert type(first(row)) is int
-  [print(col) for col in data.cols.all]
-  nums = adds(ydist(row,data) for row in data.rows)
-  print(o(mu=nums.mu, sd=nums.sd))
-
-def eg__ydist(file):
-  data=Data(csv(file or the.file))
-  r = data.rows[1] # ydist(data.rows[1],data))
-  print(show(r),  ydist(r,data),the.p)
-  #print(sorted(round(ydist(row,data),2) for row in data.rows))
-
-def dump(d): print(len(d.rows)); [print(col) for col in d.cols.all]
-
-def eg__addSub(file):
-  data=Data(csv(file or the.file))
-  dump(data)
-  cached=data.rows[:]
-  while data.rows: sub(data.rows.pop(), data)
-  dump(data)
-  for row in cached: add(row,data)
-  dump(data)
-  for row in data.rows: assert -17 < like(row,data,1000,2) < -10
-
-def eg__clone(file):
-  data=Data(csv(file or the.file))
-  dump(data)
-  data2=clone(data,src=data.rows)
-  dump(data2)
-
-def eg__stats(_):
-   def c(b): return 1 if b else 0
-   G  = random.gauss
-   R  = random.random
-   n  = 50
-   b4 = [G(10,1) for _ in range(n)]
-   d  = 0
-   while d < 2:
-     now = [x+d*R() for x in b4]
-     b1  = cliffs(b4,now)
-     b2  = bootstrap(b4,now)
-     showd(o(d=d,cliffs=c(b1), boot=c(b2), agree=c(b1==b2)))
-     d  += 0.1
-
-def eg__rank(_):
-   G  = random.gauss
-   n=100
-   d=dict(asIs  = [G(10,1) for _ in range(n)],
-          copy1 = [G(20,1) for _ in range(n)],
-          now1  = [G(20,1) for _ in range(n)],
-          copy2 = [G(40,1) for _ in range(n)],
-          now2  = [G(40,1) for _ in range(n)])
-   for k,num in vals2RankedNums(d,the.Cohen).items():
-      showd(o(what=num.txt, rank=num.rank, num=num.mu))
-
-def eg__actLearn(file,  repeats=30):
-  file = file or the.file
-  name = re.search(r'([^/]+)\.csv$', file).group(1)
-  data = Data(csv(file))
-  b4   = yNums(data.rows,data)
-  now  = Num()
-  t1   = time.perf_counter_ns()
-  for _ in range(repeats):
-    add(ydist(first(actLearn(data, shuffle=True).best.rows ) ,data), now)
-  t2  = time.perf_counter_ns()
-  print(o(win= (b4.mu - now.mu) /(b4.mu - b4.lo),
-          rows=len(data.rows),x=len(data.cols.x),y=len(data.cols.y),
-          lo0=b4.lo, mu0=b4.mu, hi0=b4.hi, mu1=now.mu,sd1=now.sd,
-          ms = int((t2-t1)/repeats/10**6),
-          stop=the.Stop,name=name))
-
-def eg__fast(file):
-  def rx1(data):
-    return ydist( first(actLearn(data,shuffle=True).best.rows), data)
-  experiment1(file or the.file,
-              repeats=30, 
-              samples=[64,32,16,8],
-              fun=rx1)
-
-def eg__quick(file):
-  def rx1(data):
-    return [ydist(first(actLearn(data, shuffle=True).best.rows), data)]
-  experiment1(file or the.file,
-              repeats=10, 
-              samples=[40,20,16,8],
-              fun=rx1)
-
-def eg__acts(file):
-  def rx1(data):
-    return [ydist(first(actLearn(data, shuffle=True).best.rows), data)]
-  experiment1(file or the.file,
-              repeats=30, 
-              samples=[200,100,50,40,30,20,16,8],
-              fun=rx1)
-
-def experiment1(file, 
-                repeats=30, samples=[32,16,8],
-                fun=lambda d: ydist(first(actLearn(d,shuffle=True).best.rows),d)):
-  name = re.search(r'([^/]+)\.csv$', file).group(1)
-  data = Data(csv(file))
-  rx   = dict(b4 = [ydist(row,data) for row in data.rows])
-  asIs = adds(rx["b4"])
-  t1   = time.perf_counter_ns()
-  for the.Stop in samples:
-    rx[the.Stop] = []
-    for _ in range(repeats): rx[the.Stop] +=  fun(data) 
-  t2 = time.perf_counter_ns()
-  report = dict(rows = len(data.rows), 
-                lo   = f"{asIs.lo:.2f}",
-                x    = len(data.cols.x), 
-                y    = len(data.cols.y),
-                ms   = round((t2 - t1) / (repeats * len(samples) * 10**6)))
-  order = vals2RankedNums(rx, asIs.sd*the.Cohen)
-  for k in rx:
-    v = order[k]
-    report[k] = f"{v.rank} {v.mu:.2f} "
-  report["name"]=name
-  print("#"+str(list(report.keys())))
-  print(list(report.values()))
-
-def fname(f): return re.sub(".*/", "", f)
-
-def eg__tree(file):
-  data = Data(csv(file or the.file))
-  model  = actLearn(data)
-  b4  = yNums(data.rows,data)
-  now = yNums(model.best.rows,data)
-  nodes = tree(model.best.rows + model.rest.rows,data)
-  print("\n"+fname(file or the.file))
-  showd(o(mu1=b4.mu, mu2=now.mu,  sd1=b4.sd, sd2=now.sd))
-  showTree(nodes)
-
-def eg__rules(file):
-  data  = Data(csv(file or the.file))
-  b4    = yNums(data.rows, data)
-  model = actLearn(data)
-  now   = yNums(model.best.rows, data)
-  nodes = tree(model.best.rows + model.rest.rows,data)
-  todo  = yNums(model.todo, data)
-  guess = sorted([(leaf(nodes,row).ys,row) for row in model.todo],key=first)
-  mid = len(guess)//5
-  after = yNums([row2 for row1 in model.todo for row2 in leaf(nodes,row1).rows],data)
-  print(fname(file or the.file))
-  print(o(txt1="b4", txt2="now",  txt3="todo",  txt4="after"))
-  print(o(mu1=b4.mu, mu2=now.mu,  mu3=todo.mu,  mu4=ydist(guess[mid][1],data)))
-  print(o(lo1=b4.lo, lo2=now.lo,  lo3=todo.lo,  lo4=ydist(guess[0][1],data)))
-  print(o(hi1=b4.hi, hi2=now.hi,  hi3=todo.hi,  hi4=ydist(guess[-1][1],data)))
-  print(o(n1=b4.n,   n2=now.n,    n3=todo.n,    n4=after.n))
-
-def eg__afterDumb(file) : eg__after(file,repeats=30, smart=False)
-
-def eg__after(file,repeats=30, smart=True):
-  data  = Data(csv(file or the.file))
-  b4    = yNums(data.rows, data) 
-  overall= {j:Num() for j in [256,128,64,32,16,8]}
-  for Stop in overall:
-    the.Stop = Stop
-    after = {j:Num() for j in [20,15,10,5,3,1]}
-    learnt = Num()
-    rand =Num()
-    for _ in range(repeats):
-      model = actLearn(data,shuffle=True)
-      nodes = tree(model.best.rows + model.rest.rows,data)
-      add(ydist(model.best.rows[0],data), learnt)
-      guesses = sorted([(leaf(nodes,row).ys,row) for row in model.todo],key=first)
-      for k in after:
-        if smart:
-              smart = min([(ydist(guess,data),guess) for _,guess in guesses[:k]], 
-                           key=first)[1]
-              add(ydist(smart,data),after[k]) 
-        else:
-              dumb = min([(ydist(row,data),row) for row in random.choices(model.todo,k=k)],
-                   key=first)[1]
-              add(ydist(dumb,data),after[k]) 
-    def win(x): return str(round(100*(1 - (x - b4.lo)/(b4.mu - b4.lo))))
-    print(the.Stop, win(learnt.mu), 
-          " ".join([win(after[k].mu) for k in after]), 
-          1, 
-          fname(file or the.file), "smart" if smart else "dumb")
-
-#--------- --------- --------- --------- --------- --------- ------- -------
-
-regx = r"-\w+\s*(\w+).*=\s*(\S+)"
-the  = o(**{m[1]:coerce(m[2]) for m in re.finditer(regx,__doc__)})
-random.seed(the.rseed)
-
-if __name__ == "__main__":  main()
+# ## Start-up ---------------------------------------------------------
+the = o(**{k:coerce(v) for k,v in re.findall(r"(\w+)=(\S+)",__doc__)})
+if __name__ == "__main__": ezrmain();
