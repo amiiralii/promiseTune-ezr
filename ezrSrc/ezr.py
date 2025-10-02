@@ -230,6 +230,7 @@ def likes(data:Data, row:Row, nall=100, nh=2) -> float:
 def likely(data:Data, rows=None) -> list[Row]:
   "Find an 'x' most likely to be best. Add to xy. Repeat."
   rows = rows or data.rows
+  # x: unlabeled pool     xy: labeled pool
   x   = clone(data, shuffle(rows[:]))
   xy, best, rest = clone(data), clone(data), clone(data)
 
