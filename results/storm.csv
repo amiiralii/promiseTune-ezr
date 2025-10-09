@@ -1,0 +1,27 @@
+EZR1 Labeling Budget, 60
+EZR2 Labeling Budget, 120
+---------------------
+Ranks--> EZR-1: 1	EZR-2 -1	Out of 18	/ 1557
+Ranks--> EZR-1: 1	EZR-2 -1	Out of 30	/ 1557
+Ranks--> EZR-1: 2	EZR-2 -1	Out of 29	/ 1557
+Ranks--> EZR-1: 8	EZR-2 3	Out of 59	/ 1557
+Ranks--> EZR-1: 5	EZR-2 5	Out of 64	/ 1557
+Ranks--> EZR-1: 1	EZR-2 -1	Out of 23	/ 1557
+Ranks--> EZR-1: 5	EZR-2 -1	Out of 29	/ 1557
+Ranks--> EZR-1: 1	EZR-2 -1	Out of 14	/ 1557
+Ezr2 is better in 1 cases out of 2.
+------ Distributions -------
+asIs:	[99, -298, -31, 96, 18, 16, 53, 99]
+EZR1:	[99, 99, 99, 99, 99, 99, 99, 100]
+EZR2:	[99, 99, 99, 99, 99, 99, 99, 100]
+PT:	[100, 100, 100, 99, 100, 100, 100]
+------ New Stats -------
+Top group : {'PT'}
+------ Old Stats -------
+#
+ 0,                      asIs, 53.00, 80.00, --------------------|----------    *    
+#
+ 1,                      EZR1, 99.00,  0.00,                     |                  *
+ 1,                      EZR2, 99.00,  0.00,                     |                  *
+#
+ 2,                        PT, 100.00,  0.00,                     |                  *
