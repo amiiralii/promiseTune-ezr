@@ -70,6 +70,21 @@ def top(rxs:dict[str,list[Qty]],
         reverse=False, same=same, 
         eps=0.01, Ks=.95, Delta="smed") -> set:
   "Return the subset of rxs's keys associated with best scores."
+  def std_dev(x: list[Qty]) -> float:
+    "Calculate standard deviation of a list."
+    if len(x) <= 1: return 1e-10
+    mean_x = sum(x) / len(x)
+    var_x = sum((v - mean_x)**2 for v in x) / (len(x) - 1)
+    return var_x**0.5
+  
+  def cohenD(l1,l2, effect_size=0.35):
+    "Return minimum mean difference threshold based on Cohen's d effect size."
+    if len(l1) <= 1 or len(l2) <= 1: return 0
+    sd1, sd2 = std_dev(l1), std_dev(l2)
+    pooled_sd = (((len(l1) - 1)*sd1*sd1 + (len(l2)-1)*sd2*sd2) / 
+                 (len(l1) + len(l2) - 2))**0.5
+    return abs(pooled_sd * effect_size) if pooled_sd > 1e-10 else 0
+    
   its = sorted([(sum(v)/len(v), len(v),k,v) for k,v in rxs.items() if v], 
                reverse=reverse)
   while len(its) > 1:
@@ -80,7 +95,7 @@ def top(rxs:dict[str,list[Qty]],
       l1, l2 = sum(vals[:i], []), sum(vals[i:], [])
       m1, m2 = sum(l1)/len(l1), sum(l2)/len(l2)
       s = (len(l1)*(m1-mu)**2 + len(l2)*(m2-mu)**2) / len(l12)
-      if sc < s and abs(m1 - m2) > eps:
+      if sc < s and abs(m1 - m2) > cohenD(l1, l2):
         sc, cut, left, right = s, i, l1, l2
     if not (cut > 0 and not same(left,right,Ks=Ks,Delta=Delta)): break
     its = its[:cut]

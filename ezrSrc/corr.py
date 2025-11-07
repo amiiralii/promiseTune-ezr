@@ -1,3 +1,4 @@
+from ast import arg
 from fileinput import filename
 from ezr import *
 import matplotlib.pyplot as plt
@@ -5,6 +6,10 @@ import numpy as np
 from causal_tools import *
 import stats as stats
 import stats2 as stats2
+
+
+from contextlib import redirect_stdout
+import io
 
 
 def apply_ezr(data):
@@ -122,16 +127,16 @@ def compareTrees(data):
   win  = lambda v: int(100*(1 - (v - b4.lo)/(b4.mu - b4.lo)))
   best = lambda rows: win(disty(data, distysort(data,rows)[0]))
   the.Budget = 50
-  the.Check = 10
+  the.Check = 1
   labels = likely(clone(data, train))
   
   asIs, ezr, causal = 1e-32, 1e-32, 1e-32
   ## Treatments
   for trt in ["causal", "ezr", "asIs"]:
     if trt == "ezr":      tree   = Tree(clone(data, labels))
-    elif trt == "causal": tree   = CausalTree(clone(data, labels))
+    elif trt == "causal": tree   = causalTree(clone(data, labels))
     else:  
-      asIs = win(disty(data, random.sample(holdout, k=1)[0]))
+      asIs = max(win(disty(data, random.sample(holdout, k=1)[0])) for _ in range(the.Check))
       continue
 
 
@@ -145,22 +150,21 @@ def compareTrees(data):
 
     row_mu_sorted = sorted([(row, treeLeaf(tree, row).mu) for row in holdout], key=lambda x: x[1])
     ii = 0
-    while row_mu_sorted[ii][1] == row_mu_sorted[ii+1][1]:
-        if ii<len(row_mu_sorted)-1: ii += 1
-        else: break
+    if len(row_mu_sorted) > 1:
+      while row_mu_sorted[ii][1] == row_mu_sorted[ii+1][1]:
+          if ii<len(row_mu_sorted)-2: ii += 1
+          else: break
     ii = max(ii, the.Check)
     bests  = [r[0] for r in row_mu_sorted[:ii]]
     d2hs   = [disty(data,row) for row in bests]
     # [print(f"{win(k):.2f}", end=", ") for k in sorted(d2hs)]
-    print("\nd2h\twin\tmu")
-    for i,j,l in zip(d2hs, [win(kk) for kk in d2hs],[r[1] for r in row_mu_sorted[:ii]]):
-      print(f"{i:.2f}\t{j:.2f}\t{win(l):.2f}")
-    print("\n\n")
+    # print("\nd2h\twin\tmu")
+    # for i,j,l in zip(d2hs, [win(kk) for kk in d2hs],[r[1] for r in row_mu_sorted[:ii]]):
+    #   print(f"{i:.2f}\t{j:.2f}\t{win(l):.2f}")
+    # print("\n\n")
     # input()
   
   return asIs, ezr, causal 
-
-
 
 def example():
   print("Example:")
@@ -190,16 +194,24 @@ if __name__ == "__main__":
   # play()
 
   filename = "../Data/moot/auto93.csv"
+  # filename = sys.argv[1]
   data = Data(csv(filename))
   asIs, ezr, causal = [], [], []
-  for _ in range(20):
+  repeats = 1
+  for _ in range(repeats):
     the.seed += 1
-    asIs_, ezr_, causal_ = compareTrees(data)
+    
+    if repeats > 1:
+      buf = io.StringIO()
+      with redirect_stdout(buf):
+          asIs_, ezr_, causal_ = compareTrees(data)
+    else: 
+      asIs_, ezr_, causal_ = compareTrees(data)
+
     asIs.append(asIs_)
     ezr.append(ezr_)
     causal.append(causal_)
   
-
   rxs = {
       "asIs": asIs,
       "ezr": ezr,
@@ -210,7 +222,7 @@ if __name__ == "__main__":
       print(f"{i}:\t{sorted(j, reverse=True)}")
 
   print("------ New Stats -------")
-  winners = stats2.top(rxs, reverse=True, Ks=0.90, Delta="medium")
+  winners = stats2.top(rxs, reverse=True, Ks=0.95, Delta="smed")
   print("Top group :", winners)
   
   treatments = []
